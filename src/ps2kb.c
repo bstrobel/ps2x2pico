@@ -1,7 +1,7 @@
 /*
  * The MIT License (MIT)
  *
- * Copyright (c) 2022 No0ne (https://github.com/No0ne)
+ * Copyright (c) 2024 No0ne (https://github.com/No0ne)
  *           (c) 2023 Dustin Hoffman
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -91,6 +91,7 @@ u8 scs3keymodemap[HOST_CMD_MIN];
 
 u8 const led2ps2[] = { 0, 4, 1, 5, 2, 6, 3, 7 };
 
+
 u32 const repeats[] = {
   33333, 37453, 41667, 45872, 48309, 54054, 58480, 62500,
   66667, 75188, 83333, 91743, 100000, 108696, 116279, 125000,
@@ -143,10 +144,12 @@ void kb_send_sc_list(const u8 *list) {
 void kb_set_leds(u8 byte) {
   if(byte > 7) byte = 0;
   tuh_kb_set_leds(led2ps2[byte]);
+  ps2in_set(&kb_in, 0xed, byte);
 }
 
 s64 blink_callback() {
   if(blinking) {
+    printf("Blinking keyboard LEDs\n");
     printf("Blinking keyboard LEDs\n");
     kb_set_leds(KEYBOARD_LED_NUMLOCK | KEYBOARD_LED_CAPSLOCK | KEYBOARD_LED_SCROLLLOCK);
     blinking = false;
@@ -166,13 +169,25 @@ void kb_set_defaults() {
   kbhost_state = KBH_STATE_IDLE;
   scs3_mode = SCS3_MODE_MAKE_BREAK_TYPEMATIC;
   set_scancodeset(2);
+void set_scancodeset(u8 scs) {
+  scancodeset = scs;
+  printf("scancodeset set to %u\n", scancodeset);
+}
+
+void kb_set_defaults() {
+  printf("Setting defaults for keyboard\n");
+  kbhost_state = KBH_STATE_IDLE;
+  scs3_mode = SCS3_MODE_MAKE_BREAK_TYPEMATIC;
+  set_scancodeset(2);
   kb_enabled = true;
   repeat_us = 91743;
   delay_ms = 500;
   key2repeat = 0;
   blinking = true;
   memchr(prev_rpt, sizeof(prev_rpt), 0);
+  memchr(prev_rpt, sizeof(prev_rpt), 0);
   add_alarm_in_ms(100, blink_callback, NULL, false);
+  ps2in_reset(&kb_in);
 }
 
 s64 repeat_cb() {
@@ -440,6 +455,8 @@ void kb_usb_receive(u8 const* report, u16 len) {
 
 const char* notinscs3_str = "WARNING: Scan code set 3 not set. Ignoring command 0x%x\n";
 
+const char* notinscs3_str = "WARNING: Scan code set 3 not set. Ignoring command 0x%x\n";
+
 void kb_receive(u8 byte, u8 prev_byte) {
   printf("h>k %x\n", byte);
   switch (kbhost_state) {
@@ -466,13 +483,44 @@ void kb_receive(u8 byte, u8 prev_byte) {
     case KBH_STATE_SET_LEDS_ED:
       kb_set_leds(byte);
       kbhost_state = KBH_STATE_IDLE;
+      kbhost_state = KBH_STATE_IDLE;
     break;
     
+    case KBH_STATE_SET_TYPEMATIC_PARAMS_F3:
     case KBH_STATE_SET_TYPEMATIC_PARAMS_F3:
       repeat_us = repeats[byte & 0x1f];
       delay_ms = delays[(byte & 0x60) >> 5];
       kbhost_state = KBH_STATE_IDLE;
     break;
+
+    case KBH_STATE_SET_SCAN_CODE_SET_F0:
+      switch((u8)byte) {
+        case 0:
+          kb_send(scancodeset);
+          break;
+        case SCAN_CODE_SET_1:
+        case SCAN_CODE_SET_2:
+        case SCAN_CODE_SET_3:
+          memchr(scs3keymodemap,0,sizeof(scs3keymodemap));
+          set_scancodeset(byte);
+          break;
+        default:
+          printf("WARNING: scancodeset requested to set to unknown value %u by host, defaulting to 2\n",byte);
+          set_scancodeset(2);
+        break;
+      }
+      kbhost_state = KBH_STATE_IDLE;
+    break;
+
+    case KBH_STATE_IDLE:
+    default:
+      switch ((u8)byte) {
+        case KBHOSTCMD_RESET_FF:
+          printf("KBHOSTCMD_RESET_FF\n");
+          // We only set defaults, we do not actually reset ourselves.
+          kb_set_defaults();
+          kb_send(KB_MSG_ACK_FA);
+          kb_send(KB_MSG_SELFTEST_PASSED_AA);
 
     case KBH_STATE_SET_SCAN_CODE_SET_F0:
       switch((u8)byte) {
@@ -508,7 +556,110 @@ void kb_receive(u8 byte, u8 prev_byte) {
           printf("KBHOSTCMD_RESEND_FE\n");
           kb_resend_last();
           kbhost_state = KBH_STATE_IDLE;
+
+        case KBHOSTCMD_RESEND_FE:
+          printf("KBHOSTCMD_RESEND_FE\n");
+          kb_resend_last();
+          kbhost_state = KBH_STATE_IDLE;
         return;
+
+        case KBHOSTCMD_SCS3_SET_KEY_MAKE_FD:
+          printf("KBHOSTCMD_SCS3_SET_KEY_MAKE_FD\n");
+          if (scancodeset == SCAN_CODE_SET_3) {
+            kbhost_state = KBH_STATE_SET_KEY_MAKE_FD;
+          } else {
+            printf(notinscs3_str,byte);
+            kbhost_state = KBH_STATE_IDLE;
+          }
+        break;
+
+        case KBHOSTCMD_SCS3_SET_KEY_MAKE_BREAK_FC:
+          printf("KBHOSTCMD_SCS3_SET_KEY_MAKE_BREAK_FC\n");
+          if (scancodeset == SCAN_CODE_SET_3) {
+            kbhost_state = KBH_STATE_SET_KEY_MAKE_BREAK_FC;
+          } else {
+            printf(notinscs3_str,byte);
+            kbhost_state = KBH_STATE_IDLE;
+          }
+        break;
+
+        case KBHOSTCMD_SCS3_SET_KEY_MAKE_TYPEMATIC_FB:
+          printf("KBHOSTCMD_SCS3_SET_KEY_MAKE_TYPEMATIC_FB\n");
+          if (scancodeset == SCAN_CODE_SET_3) {
+            kbhost_state = KBH_STATE_SET_KEY_MAKE_TYPEMATIC_FB;
+          } else {
+            printf(notinscs3_str,byte);
+            kbhost_state = KBH_STATE_IDLE;
+          }
+        break;
+
+
+        case KBHOSTCMD_SCS3_SET_ALL_MAKE_BREAK_TYPEMATIC_FA: 
+          printf("KBHOSTCMD_SCS3_SET_ALL_MAKE_BREAK_TYPEMATIC_FA\n");
+          if (scancodeset == SCAN_CODE_SET_3) {
+            scs3_mode = SCS3_MODE_MAKE_BREAK_TYPEMATIC;
+            memchr(scs3keymodemap,0,sizeof(scs3keymodemap));
+          } else {
+            printf(notinscs3_str,byte);
+          }
+          kbhost_state = KBH_STATE_IDLE;
+        break;
+
+        case KBHOSTCMD_SCS3_SET_ALL_MAKE_F9: 
+          printf("KBHOSTCMD_SCS3_SET_ALL_MAKE_F9\n");
+          if (scancodeset == SCAN_CODE_SET_3) {
+            scs3_mode = SCS3_MODE_MAKE;
+            memchr(scs3keymodemap,0,sizeof(scs3keymodemap));
+          } else {
+            printf(notinscs3_str,byte);
+          }
+          kbhost_state = KBH_STATE_IDLE;
+        break;
+
+        case KBHOSTCMD_SCS3_SET_ALL_MAKE_BREAK_F8: 
+          // utilized by SGI O2
+          if (scancodeset == SCAN_CODE_SET_3) {
+            printf("KBHOSTCMD_SCS3_SET_ALL_MAKE_BREAK_F8\n");
+            scs3_mode = SCS3_MODE_MAKE_BREAK;
+            memchr(scs3keymodemap,0,sizeof(scs3keymodemap));
+          } else {
+            printf(notinscs3_str,byte);
+          }
+          kbhost_state = KBH_STATE_IDLE;
+        break;
+
+        case KBHOSTCMD_SCS3_SET_ALL_MAKE_TYPEMATIC_F7:
+          if (scancodeset == SCAN_CODE_SET_3) {
+            printf("KBHOSTCMD_SCS3_SET_ALL_MAKE_TYPEMATIC_F7\n");
+            scs3_mode = SCS3_MODE_MAKE_TYPEMATIC;
+            memchr(scs3keymodemap,0,sizeof(scs3keymodemap));
+          } else {
+            printf(notinscs3_str,byte);
+          }
+          kbhost_state = KBH_STATE_IDLE;
+        break;
+
+        case KBHOSTCMD_SET_DEFAULT_F6:
+          printf("KBHOSTCMD_SET_DEFAULT_F6\n");
+          kb_set_defaults();
+        break;
+        
+        case KBHOSTCMD_DISABLE_F5:
+          printf("KBHOSTCMD_DISABLE_F5\n");
+          // Documentation says this command might also set defaults.
+          // In the case of a SGI O2 and generic PS/2 Cherry KB this not true
+          // and would prevent the O2 from working.
+          // The O2 sets scan code set 3 and then disables the keyboard with F5.
+          // It still expects the KB to be in scan code set 3 mode though
+          // when it enables it afterwards with F4.
+          //
+          // kb_set_defaults();
+          //
+          kb_enabled = false;
+        break;
+        
+        case KBHOSTCMD_ENABLE_F4:
+          printf("KBHOSTCMD_ENABLE_F4\n");
 
         case KBHOSTCMD_SCS3_SET_KEY_MAKE_FD:
           printf("KBHOSTCMD_SCS3_SET_KEY_MAKE_FD\n");
@@ -626,8 +777,35 @@ void kb_receive(u8 byte, u8 prev_byte) {
         case KBHOSTCMD_SET_SCAN_CODE_SET_F0:
           printf("KBHOSTCMD_SET_SCAN_CODE_SET_F0\n");
           kbhost_state = KBH_STATE_SET_SCAN_CODE_SET_F0;
+          kbhost_state = KBH_STATE_IDLE;
+        break;
+    
+        case KBHOSTCMD_SET_TYPEMATIC_PARAMS_F3:
+          printf("KBHOSTCMD_SET_TYPEMATIC_PARAMS_F3\n");
+          kbhost_state = KBH_STATE_SET_TYPEMATIC_PARAMS_F3;
         break;
         
+        case KBHOSTCMD_READ_ID_F2:
+          printf("KBHOSTCMD_READ_ID_F2\n");
+          kb_send(KB_MSG_ACK_FA);
+          kb_send(KB_MSG_ID1_AB);
+          kb_send(KB_MSG_ID2_83);
+        return; // ACK already sent
+
+        case KBHOSTCMD_SET_SCAN_CODE_SET_F0:
+          printf("KBHOSTCMD_SET_SCAN_CODE_SET_F0\n");
+          kbhost_state = KBH_STATE_SET_SCAN_CODE_SET_F0;
+        break;
+        
+        case KBHOSTCMD_ECHO_EE:
+          printf("KBHOSTCMD_ECHO_EE\n");
+          kb_send(KB_MSG_ECHO_EE);
+          kbhost_state = KBH_STATE_IDLE;
+        return;
+
+        case KBHOSTCMD_SET_LEDS_ED:
+          printf("KBHOSTCMD_SET_LEDS_ED\n");
+          kbhost_state = KBH_STATE_SET_LEDS_ED;
         case KBHOSTCMD_ECHO_EE:
           printf("KBHOSTCMD_ECHO_EE\n");
           kb_send(KB_MSG_ECHO_EE);
@@ -644,9 +822,16 @@ void kb_receive(u8 byte, u8 prev_byte) {
           kb_send(KB_MSG_RESEND_FE);
           kbhost_state = KBH_STATE_IDLE;
         return;
+
+        default:
+          printf("WARNING: Unknown host cmd: 0x%x, requesting resend from host!\n",byte);
+          kb_send(KB_MSG_RESEND_FE);
+          kbhost_state = KBH_STATE_IDLE;
+        return;
       }
     break;
   }
+  kb_send(KB_MSG_ACK_FA);
   kb_send(KB_MSG_ACK_FA);
 }
 
